@@ -1,89 +1,74 @@
 import cv2
 import numpy as np
 
-def is_straight_line(x_coords, y_coords, threshold=1.5):
-    if len(x_coords) < 2:
-        return True
-    coeffs = np.polyfit(x_coords, y_coords, deg=1)
-    fitted = np.polyval(coeffs, x_coords)
-    residuals = np.abs(y_coords - fitted)
-    avg_residual = np.mean(residuals)
-    return avg_residual < threshold
+def detect_text_in_manual_region(image_path, region, output_path="output.png",
+                                 min_area=30, max_area=5000, delta=5,
+                                 max_char_dist_x_ratio=1.5, max_char_dist_y_ratio=0.6,
+                                 max_height_diff_ratio=0.3, curve_degree=2, min_chars_in_line=3):
+    """
+    Detect whether the text in a manually specified region is curved or straight.
 
-def analyze_text_region(image_path, region_coords, output_path="output_text_line_analysis.png",
-                        min_area=30, max_area=5000, delta=5,
-                        curve_degree=2):
+    Args:
+        image_path (str): Path to input image.
+        region (tuple): (x, y, w, h) specifying the region to analyze.
+        output_path (str): Path to save output image.
+        Other parameters: tuning MSER and grouping.
+    """
     img = cv2.imread(image_path)
     if img is None:
-        print("Image could not be loaded.")
+        print("Could not load image.")
         return
 
-    x, y, w, h = region_coords
-    roi = img[y:y+h, x:x+w]
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    x_roi, y_roi, w_roi, h_roi = region
+    roi = img[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi]
+    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-    mser = cv2.MSER_create(_delta=delta, _min_area=min_area, _max_area=max_area)
-    regions, bboxes = mser.detectRegions(gray)
+    mser = cv2.MSER_create()
+    mser.setDelta(delta)
+    mser.setMinArea(min_area)
+    mser.setMaxArea(max_area)
 
-    char_centroids = []
-    filtered_bboxes = []
+    regions, bboxes = mser.detectRegions(gray_roi)
 
-    for i, bbox in enumerate(bboxes):
-        x0, y0, w0, h0 = bbox
-        if w0 < 5 or h0 < 5 or w0 > 500 or h0 > 500:
+    candidate_chars = []
+    for i, box in enumerate(bboxes):
+        x, y, w, h = box
+        if w < 5 or h < 5 or w > 500 or h > 500:
             continue
-        aspect_ratio = w0 / float(h0)
+
+        aspect_ratio = w / float(h)
         if not (0.1 < aspect_ratio < 10):
             continue
-        contour = regions[i]
-        if len(contour) < 5:
+
+        if len(regions[i]) < 5:
             continue
+
+        contour = regions[i]
         area = cv2.contourArea(contour)
         hull = cv2.convexHull(contour)
         hull_area = cv2.contourArea(hull)
+
         if hull_area == 0:
             continue
-        solidity = area / hull_area
-        extent = area / (w0 * h0)
-        if not (solidity > 0.3 and extent > 0.15):
+
+        solidity = float(area) / hull_area
+        extent = float(area) / (w * h)
+
+        if solidity < 0.3 or extent < 0.15:
             continue
-        cx = x0 + w0 // 2
-        cy = y0 + h0 // 2
-        char_centroids.append((cx, cy))
-        filtered_bboxes.append((x0, y0, w0, h0))
 
-    vis = roi.copy()
-    for (bx, by, bw, bh) in filtered_bboxes:
-        cv2.rectangle(vis, (bx, by), (bx + bw, by + bh), (0, 255, 0), 1)
+        cx = x + w // 2
+        cy = y + h // 2
+        candidate_chars.append({"centroid": (cx, cy), "w": w, "h": h, "bbox": (x, y, w, h)})
 
-    if len(char_centroids) >= 2:
-        x_pts = np.array([pt[0] for pt in char_centroids])
-        y_pts = np.array([pt[1] for pt in char_centroids])
-        if is_straight_line(x_pts, y_pts):
-            cv2.line(vis, (x_pts.min(), int(np.mean(y_pts))),
-                          (x_pts.max(), int(np.mean(y_pts))), (255, 0, 0), 2)
-            print("Detected: Straight line")
-        else:
-            try:
-                poly_coeffs = np.polyfit(x_pts, y_pts, curve_degree)
-                poly_func = np.poly1d(poly_coeffs)
-                x_fit = np.linspace(x_pts.min(), x_pts.max(), 100)
-                y_fit = poly_func(x_fit)
-                curve_pts = np.array([[int(xv), int(yv)] for xv, yv in zip(x_fit, y_fit)], dtype=np.int32)
-                cv2.polylines(vis, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
-                print("Detected: Curved line")
-            except:
-                print("Curve fitting failed.")
-    else:
-        print("Not enough character points.")
+    # Draw MSER boxes (optional)
+    output = roi.copy()
+    for c in candidate_chars:
+        x, y, w, h = c['bbox']
+        cv2.rectangle(output, (x, y), (x + w, y + h), (0, 255, 0), 1)
 
-    output_image = img.copy()
-    output_image[y:y+h, x:x+w] = vis
-    cv2.imwrite(output_path, output_image)
-    print(f"Saved to: {output_path}")
+    candidate_chars.sort(key=lambda item: item['centroid'][0])
 
-if __name__ == "__main__":
-    image_path = "testt.png"
-    output_path = "result.png"
-    region = (50, 100, 300, 60)  # example, change to your actual coordinates
-    analyze_text_region(image_path, region, output_path)
+    lines = []
+    used = set()
+    for i, c1
