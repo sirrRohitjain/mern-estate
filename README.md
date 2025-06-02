@@ -44,7 +44,7 @@ def detect_text_regions(image_path, output_path="output_filtered_text.png"):
         if is_likely_text_region(contour, bbox, gray):
             cv2.drawContours(mask, [contour], -1, 255, -1)
 
-    # Merge nearby regions to form words/lines
+    # Merge nearby regions
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 5))
     dilated = cv2.dilate(mask, kernel, iterations=1)
 
@@ -58,3 +58,10 @@ def detect_text_regions(image_path, output_path="output_filtered_text.png"):
 
     cv2.imwrite(output_path, output_img)
     print(f"Saved result to: {output_path}")
+
+# === Run with input file ===
+if __name__ == "__main__":
+    input_image_path = "testt.png"     # <<<<<<<<<<<<<<  Replace this with your input image
+    output_image_path = "filtered_text_output.png"
+
+    detect_text_regions(input_image_path, output_image_path)
