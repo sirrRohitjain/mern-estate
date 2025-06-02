@@ -28,35 +28,37 @@ def detect_text_regions(image_path, output_path="output_text_boxes.png"):
         return
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # MSER detector
-    mser = cv2.MSER_create(_min_area=100, _max_area=100000)
+    # Create MSER object and configure
+    mser = cv2.MSER_create()
+    mser.setMinArea(100)
+    mser.setMaxArea(10000)
+
     regions, bboxes = mser.detectRegions(gray)
 
     mask = np.zeros_like(gray, dtype=np.uint8)
 
-    # Filter out non-text regions
+    # Filter and draw only valid text-like regions
     for i, contour in enumerate(regions):
         bbox = bboxes[i]
         if is_likely_text_region(contour, bbox):
             cv2.drawContours(mask, [contour], -1, 255, -1)
 
-    # Morphological operations to group close letters
+    # Morphological grouping of nearby characters
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
     dilated = cv2.dilate(mask, kernel, iterations=1)
 
-    # Find contours of text blobs
+    # Find external contours for text blobs
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Draw final bounding boxes
     result = img.copy()
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        if w > 20 and h > 15:  # basic size threshold to remove junk
+        if w > 20 and h > 15:  # discard small non-text artifacts
             cv2.rectangle(result, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
     cv2.imwrite(output_path, result)
     print(f"Saved result with text bounding boxes to: {output_path}")
 
-# --- Run it ---
+# --- Run example ---
 if __name__ == "__main__":
     detect_text_regions("testt.png", "text_only_boxes.png")
