@@ -2,10 +2,8 @@ import cv2
 import numpy as np
 
 def is_straight_line(x_coords, y_coords, threshold=1.5):
-    """Check if points fit well to a straight line (low residuals)."""
     if len(x_coords) < 2:
-        return True  # Not enough points to decide
-
+        return True
     coeffs = np.polyfit(x_coords, y_coords, deg=1)
     fitted = np.polyval(coeffs, x_coords)
     residuals = np.abs(y_coords - fitted)
@@ -15,13 +13,6 @@ def is_straight_line(x_coords, y_coords, threshold=1.5):
 def analyze_text_region(image_path, region_coords, output_path="output_text_line_analysis.png",
                         min_area=30, max_area=5000, delta=5,
                         curve_degree=2):
-    """
-    Given a specific text region, detect characters and determine if they form a curved or straight line.
-    Args:
-        image_path (str): Path to input image.
-        region_coords (tuple): (x, y, w, h) specifying text block manually.
-        output_path (str): Path to save the result image.
-    """
     img = cv2.imread(image_path)
     if img is None:
         print("Image could not be loaded.")
@@ -31,7 +22,6 @@ def analyze_text_region(image_path, region_coords, output_path="output_text_line
     roi = img[y:y+h, x:x+w]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
 
-    # MSER initialization
     mser = cv2.MSER_create(_delta=delta, _min_area=min_area, _max_area=max_area)
     regions, bboxes = mser.detectRegions(gray)
 
@@ -40,37 +30,28 @@ def analyze_text_region(image_path, region_coords, output_path="output_text_line
 
     for i, bbox in enumerate(bboxes):
         x0, y0, w0, h0 = bbox
-
-        # Basic filtering
         if w0 < 5 or h0 < 5 or w0 > 500 or h0 > 500:
             continue
-
         aspect_ratio = w0 / float(h0)
-        if not (0.1 < aspect_ratio < 10):  # Allow flexible fonts
+        if not (0.1 < aspect_ratio < 10):
             continue
-
-        # Convex hull filtering
         contour = regions[i]
         if len(contour) < 5:
             continue
-
         area = cv2.contourArea(contour)
         hull = cv2.convexHull(contour)
         hull_area = cv2.contourArea(hull)
         if hull_area == 0:
             continue
-
         solidity = area / hull_area
         extent = area / (w0 * h0)
         if not (solidity > 0.3 and extent > 0.15):
             continue
-
         cx = x0 + w0 // 2
         cy = y0 + h0 // 2
         char_centroids.append((cx, cy))
         filtered_bboxes.append((x0, y0, w0, h0))
 
-    # Draw bounding boxes
     vis = roi.copy()
     for (bx, by, bw, bh) in filtered_bboxes:
         cv2.rectangle(vis, (bx, by), (bx + bw, by + bh), (0, 255, 0), 1)
@@ -78,41 +59,31 @@ def analyze_text_region(image_path, region_coords, output_path="output_text_line
     if len(char_centroids) >= 2:
         x_pts = np.array([pt[0] for pt in char_centroids])
         y_pts = np.array([pt[1] for pt in char_centroids])
-
         if is_straight_line(x_pts, y_pts):
-            # Draw straight line
             cv2.line(vis, (x_pts.min(), int(np.mean(y_pts))),
                           (x_pts.max(), int(np.mean(y_pts))), (255, 0, 0), 2)
             print("Detected: Straight line")
         else:
-            # Fit a curve
             try:
                 poly_coeffs = np.polyfit(x_pts, y_pts, curve_degree)
                 poly_func = np.poly1d(poly_coeffs)
-
                 x_fit = np.linspace(x_pts.min(), x_pts.max(), 100)
                 y_fit = poly_func(x_fit)
                 curve_pts = np.array([[int(xv), int(yv)] for xv, yv in zip(x_fit, y_fit)], dtype=np.int32)
                 cv2.polylines(vis, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
                 print("Detected: Curved line")
             except:
-                print("Curve fitting failed. Skipping drawing.")
+                print("Curve fitting failed.")
     else:
-        print("Not enough character points to analyze.")
+        print("Not enough character points.")
 
-    # Place back the region in the image
     output_image = img.copy()
     output_image[y:y+h, x:x+w] = vis
     cv2.imwrite(output_path, output_image)
     print(f"Saved to: {output_path}")
 
-
-# === Run the function ===
 if __name__ == "__main__":
-    image_path = "testt.png"  # Your input image
-    output_path = "result_curve_or_line.png"
-    
-    # Manually specify the text block rectangle (x, y, w, h) — all in pixels
-    # Use Paint or any image tool to measure
-    text_block_coords = (50, 120, 300, 60)  # Example values
-    analyze_text_region(image_path, text_block_coords, output_path)
+    image_path = "testt.png"
+    output_path = "result.png"
+    region = (50, 100, 300, 60)  # example, change to your actual coordinates
+    analyze_text_region(image_path, region, output_path)
