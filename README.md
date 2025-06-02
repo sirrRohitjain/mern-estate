@@ -71,4 +71,76 @@ def detect_text_in_manual_region(image_path, region, output_path="output.png",
 
     lines = []
     used = set()
-    for i, c1
+    for i, c1 in enumerate(candidate_chars):
+        if i in used:
+            continue
+        line = [c1]
+        used.add(i)
+
+        for j, c2 in enumerate(candidate_chars):
+            if j in used:
+                continue
+
+            last = line[-1]
+            avg_w = (last['w'] + c2['w']) / 2
+            avg_h = (last['h'] + c2['h']) / 2
+
+            dx = c2['centroid'][0] - last['centroid'][0]
+            dy = abs(c2['centroid'][1] - last['centroid'][1])
+            height_diff = abs(last['h'] - c2['h']) / max(last['h'], c2['h'])
+
+            if 0 < dx < avg_w * max_char_dist_x_ratio and \
+               dy < avg_h * max_char_dist_y_ratio and \
+               height_diff < max_height_diff_ratio:
+                line.append(c2)
+                used.add(j)
+
+        if len(line) >= min_chars_in_line:
+            lines.append(line)
+
+    for line in lines:
+        x_coords = np.array([c['centroid'][0] for c in line])
+        y_coords = np.array([c['centroid'][1] for c in line])
+
+        if len(x_coords) < curve_degree + 1:
+            points = np.array([c['centroid'] for c in line], np.int32)
+            cv2.polylines(output, [points.reshape(-1, 1, 2)], False, (255, 0, 0), 2)
+            continue
+
+        coeffs = np.polyfit(x_coords, y_coords, curve_degree)
+        poly = np.poly1d(coeffs)
+
+        x_fit = np.linspace(x_coords.min(), x_coords.max(), 100)
+        y_fit = poly(x_fit)
+
+        curve_pts = np.array([[int(x), int(y)] for x, y in zip(x_fit, y_fit)], np.int32)
+        cv2.polylines(output, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
+
+    # Replace the ROI in original image
+    img[y_roi:y_roi+h_roi, x_roi:x_roi+w_roi] = output
+    cv2.imwrite(output_path, img)
+    print(f"Result saved to {output_path}")
+
+
+# Example usage:
+if __name__ == "__main__":
+    image_file = "your_image.png"
+    manual_region = (50, 100, 300, 100)  # x, y, w, h (in pixels)
+    detect_text_in_manual_region(image_file, manual_region, output_path="manual_output.png")
+
+
+Here's the complete Python code that:
+
+Accepts a manually specified rectangular region (x, y, w, h).
+
+Uses MSER to detect characters within that region.
+
+Groups the detected characters into lines.
+
+Fits a curve to each line to determine if it's curved or straight.
+
+Draws the result and saves the image.
+
+
+You can find this full implementation in the code block above. Let me know if you want to visualize step-by-step detections or label the output with "Curved" or "Straight" text annotations.
+
