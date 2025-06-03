@@ -1,117 +1,79 @@
 import cv2
 import numpy as np
 import easyocr
-import math
+import torch
 
-# Parameters
-image_path = "your_image.jpg"  # Replace with your image file
-output_path = "output_curve_result.png"
-min_mser_area = 30
-max_mser_area = 2000
-curve_degree = 2
+def extract_characters_with_mser(gray_crop):
+    mser = cv2.MSER_create()
+    mser.setMinArea(30)
+    mser.setMaxArea(5000)
+    mser.setDelta(5)
+    mser.setMaxVariation(0.25)
+    mser.setMinDiversity(0.2)
 
-# Initialize EasyOCR
-reader = easyocr.Reader(['en'], gpu=False)
-
-# Read image
-image = cv2.imread(image_path)
-if image is None:
-    raise ValueError(f"Image not found at path: {image_path}")
-
-output_img = image.copy()
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Get OCR word-level boxes
-ocr_results = reader.readtext(image)
-
-# Draw OCR word-level bounding boxes
-for bbox, text, conf in ocr_results:
-    pts = np.array(bbox, dtype=np.int32)
-    cv2.polylines(output_img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)  # Green box for word
-
-# Initialize MSER
-mser = cv2.MSER_create(_min_area=min_mser_area, _max_area=max_mser_area)
-regions, _ = mser.detectRegions(gray)
-
-# For each OCR box, detect MSER characters within it
-for bbox, text, conf in ocr_results:
-    box_pts = np.array(bbox, dtype=np.int32)
-    x_min = np.min(box_pts[:, 0])
-    x_max = np.max(box_pts[:, 0])
-    y_min = np.min(box_pts[:, 1])
-    y_max = np.max(box_pts[:, 1])
-
-    word_roi_mask = np.zeros(gray.shape, dtype=np.uint8)
-    cv2.fillPoly(word_roi_mask, [box_pts], 255)
-
-    char_centroids = []
+    regions, _ = mser.detectRegions(gray_crop)
+    char_info = []
 
     for region in regions:
-        region_pts = np.array(region).reshape(-1, 1, 2)
-        rect = cv2.minAreaRect(region_pts)
+        if len(region) < 5:
+            continue
+        rect = cv2.minAreaRect(region)
         box = cv2.boxPoints(rect)
         box = np.int0(box)
+        centroid = np.mean(box, axis=0)
+        char_info.append({'box': box, 'centroid': centroid})
+    return char_info
 
-        # Filter by intersection with word-level OCR box
-        inside_mask = np.zeros(gray.shape, dtype=np.uint8)
-        cv2.drawContours(inside_mask, [box], -1, 255, -1)
-        intersect = cv2.bitwise_and(word_roi_mask, inside_mask)
-        if cv2.countNonZero(intersect) == 0:
-            continue
+def fit_and_draw_curve(image, centroids, color=(0, 0, 255), degree=2):
+    if len(centroids) < degree + 1:
+        return
+    centroids = sorted(centroids, key=lambda p: p[0])
+    x_coords = np.array([p[0] for p in centroids])
+    y_coords = np.array([p[1] for p in centroids])
 
-        # Draw rotated rect (parallelogram-style)
-        cv2.polylines(output_img, [box], True, (255, 0, 255), 1)  # Magenta box for character
+    try:
+        coeffs = np.polyfit(x_coords, y_coords, degree)
+        poly_func = np.poly1d(coeffs)
+        x_vals = np.linspace(x_coords.min(), x_coords.max(), 100)
+        y_vals = poly_func(x_vals)
+        curve_points = np.array([[int(x), int(y)] for x, y in zip(x_vals, y_vals)], np.int32)
+        cv2.polylines(image, [curve_points.reshape(-1, 1, 2)], isClosed=False, color=color, thickness=2)
+    except np.RankWarning:
+        pass
 
-        # Compute centroid
-        M = cv2.moments(box)
-        if M["m00"] != 0:
-            cX = int(M["m10"] / M["m00"])
-            cY = int(M["m01"] / M["m00"])
-            char_centroids.append((cX, cY))
+def process_image(image_path, output_path="output.png", curve_degree=2):
+    reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+    img = cv2.imread(image_path)
+    img_output = img.copy()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    results = reader.readtext(img)
 
-    # Fit curve if enough characters
-    if len(char_centroids) >= curve_degree + 1:
-        x_vals = np.array([pt[0] for pt in char_centroids])
-        y_vals = np.array([pt[1] for pt in char_centroids])
+    for bbox, text, conf in results:
+        bbox_np = np.array(bbox, dtype=np.int32)
+        cv2.polylines(img_output, [bbox_np.reshape(-1, 1, 2)], True, (0, 255, 0), 2)
 
-        try:
-            poly_coeffs = np.polyfit(x_vals, y_vals, deg=curve_degree)
-            poly_func = np.poly1d(poly_coeffs)
+        x_min = np.min(bbox_np[:, 0])
+        y_min = np.min(bbox_np[:, 1])
+        x_max = np.max(bbox_np[:, 0])
+        y_max = np.max(bbox_np[:, 1])
 
-            x_line = np.linspace(min(x_vals), max(x_vals), 100)
-            y_line = poly_func(x_line)
+        word_crop = gray[y_min:y_max, x_min:x_max]
+        chars = extract_characters_with_mser(word_crop)
 
-            curve_pts = np.array([[int(x), int(y)] for x, y in zip(x_line, y_line)], dtype=np.int32)
-            cv2.polylines(output_img, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)  # Red curve
+        char_centroids = []
+        for char in chars:
+            # Shift box coordinates to original image space
+            shifted_box = char['box'] + np.array([x_min, y_min])
+            shifted_centroid = char['centroid'] + np.array([x_min, y_min])
+            char_centroids.append(shifted_centroid)
+            cv2.polylines(img_output, [shifted_box.reshape(-1, 1, 2)], True, (255, 0, 0), 1)
 
-        except np.linalg.LinAlgError:
-            continue  # Skip if curve fitting fails
+        if len(char_centroids) >= curve_degree + 1:
+            fit_and_draw_curve(img_output, char_centroids, degree=curve_degree)
 
-# Save output
-cv2.imwrite(output_path, output_img)
-print(f"Result saved to {output_path}")
+    cv2.imwrite(output_path, img_output)
+    print(f"Saved output to: {output_path}")
 
-
-✅ Here's the complete code that:
-
-1. Uses EasyOCR to get word-level text boxes.
-
-
-2. Uses MSER to detect character regions inside each word.
-
-
-3. Draws rotated bounding boxes (parallelograms) for each character.
-
-
-4. Computes centroids of these character boxes.
-
-
-5. Fits a curve through the centroids for each word.
-
-
-6. Saves the result to an output image.
-
-
-
-Let me know if you'd like enhancements like noise filtering, adaptive MSER tuning, or improved curve fitting.
-
+# Example usage
+if __name__ == "__main__":
+    process_image("your_image.jpg", output_path="curved_text_output.png", curve_degree=2)
