@@ -1,79 +1,72 @@
 import cv2
 import numpy as np
 import easyocr
-import torch
 
-def extract_characters_with_mser(gray_crop):
-    mser = cv2.MSER_create()
-    mser.setMinArea(30)
-    mser.setMaxArea(5000)
-    mser.setDelta(5)
-    mser.setMaxVariation(0.25)
-    mser.setMinDiversity(0.2)
-
-    regions, _ = mser.detectRegions(gray_crop)
-    char_info = []
-
-    for region in regions:
-        if len(region) < 5:
-            continue
-        rect = cv2.minAreaRect(region)
-        box = cv2.boxPoints(rect)
-        box = np.int0(box)
-        centroid = np.mean(box, axis=0)
-        char_info.append({'box': box, 'centroid': centroid})
-    return char_info
-
-def fit_and_draw_curve(image, centroids, color=(0, 0, 255), degree=2):
-    if len(centroids) < degree + 1:
+def detect_text_and_curves(image_path, output_path="output.png", curve_degree=2):
+    # Load image
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Failed to load image: {image_path}")
         return
-    centroids = sorted(centroids, key=lambda p: p[0])
-    x_coords = np.array([p[0] for p in centroids])
-    y_coords = np.array([p[1] for p in centroids])
+    img_draw = image.copy()
 
-    try:
-        coeffs = np.polyfit(x_coords, y_coords, degree)
-        poly_func = np.poly1d(coeffs)
-        x_vals = np.linspace(x_coords.min(), x_coords.max(), 100)
-        y_vals = poly_func(x_vals)
-        curve_points = np.array([[int(x), int(y)] for x, y in zip(x_vals, y_vals)], np.int32)
-        cv2.polylines(image, [curve_points.reshape(-1, 1, 2)], isClosed=False, color=color, thickness=2)
-    except np.RankWarning:
-        pass
+    # Initialize OCR reader
+    reader = easyocr.Reader(['en'], gpu=False)
+    results = reader.readtext(image)
 
-def process_image(image_path, output_path="output.png", curve_degree=2):
-    reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
-    img = cv2.imread(image_path)
-    img_output = img.copy()
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    results = reader.readtext(img)
+    # Draw OCR bounding boxes and process each word-box with MSER
+    mser = cv2.MSER_create(_delta=5, _min_area=30, _max_area=5000)
 
-    for bbox, text, conf in results:
-        bbox_np = np.array(bbox, dtype=np.int32)
-        cv2.polylines(img_output, [bbox_np.reshape(-1, 1, 2)], True, (0, 255, 0), 2)
+    for (bbox, text, conf) in results:
+        # Draw OCR word bounding box (in green)
+        pts = np.array(bbox, dtype=np.int32)
+        cv2.polylines(img_draw, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
 
-        x_min = np.min(bbox_np[:, 0])
-        y_min = np.min(bbox_np[:, 1])
-        x_max = np.max(bbox_np[:, 0])
-        y_max = np.max(bbox_np[:, 1])
+        # Define bounding rectangle for MSER
+        x_min = int(min(p[0] for p in bbox))
+        y_min = int(min(p[1] for p in bbox))
+        x_max = int(max(p[0] for p in bbox))
+        y_max = int(max(p[1] for p in bbox))
+        roi = image[y_min:y_max, x_min:x_max]
 
-        word_crop = gray[y_min:y_max, x_min:x_max]
-        chars = extract_characters_with_mser(word_crop)
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        regions, _ = mser.detectRegions(gray_roi)
 
-        char_centroids = []
-        for char in chars:
-            # Shift box coordinates to original image space
-            shifted_box = char['box'] + np.array([x_min, y_min])
-            shifted_centroid = char['centroid'] + np.array([x_min, y_min])
-            char_centroids.append(shifted_centroid)
-            cv2.polylines(img_output, [shifted_box.reshape(-1, 1, 2)], True, (255, 0, 0), 1)
+        centroids = []
 
-        if len(char_centroids) >= curve_degree + 1:
-            fit_and_draw_curve(img_output, char_centroids, degree=curve_degree)
+        for region in regions:
+            hull = cv2.convexHull(region.reshape(-1, 1, 2))
+            rect = cv2.minAreaRect(hull)
+            box = cv2.boxPoints(rect)
+            box = box.astype(np.intp)
 
-    cv2.imwrite(output_path, img_output)
-    print(f"Saved output to: {output_path}")
+            # Shift box to image coordinates
+            box[:, 0] += x_min
+            box[:, 1] += y_min
 
-# Example usage
-if __name__ == "__main__":
-    process_image("your_image.jpg", output_path="curved_text_output.png", curve_degree=2)
+            # Draw parallelogram box (in blue)
+            cv2.polylines(img_draw, [box], isClosed=True, color=(255, 0, 0), thickness=1)
+
+            # Compute centroid
+            M = cv2.moments(box)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                centroids.append((cx, cy))
+
+        # Fit curve only if enough points
+        if len(centroids) >= curve_degree + 1:
+            x_coords = np.array([pt[0] for pt in centroids])
+            y_coords = np.array([pt[1] for pt in centroids])
+
+            try:
+                poly = np.poly1d(np.polyfit(x_coords, y_coords, curve_degree))
+                x_range = np.linspace(min(x_coords), max(x_coords), 100)
+                y_curve = poly(x_range)
+                curve_pts = np.array([[int(x), int(y)] for x, y in zip(x_range, y_curve)], np.int32)
+                cv2.polylines(img_draw, [curve_pts.reshape(-1, 1, 2)], isClosed=False, color=(0, 0, 255), thickness=2)
+            except np.linalg.LinAlgError:
+                pass
+
+    cv2.imwrite(output_path, img_draw)
+    print(f"Output saved to {output_path}")
