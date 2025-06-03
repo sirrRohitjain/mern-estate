@@ -28,9 +28,17 @@ def group_text_by_lines(centroids, eps=50, min_samples=2):
     
     return list(grouped.values())
 
-def draw_fitted_curves_on_image(image_path, text_lines, curve_degree=2, output_path="output_with_curves.png"):
-    img = cv2.imread(image_path)
+def draw_bounding_boxes_and_text(img, results):
+    for bbox, text, conf in results:
+        if conf < 0.3 or len(text.strip()) == 0:
+            continue
+        pts = np.array(bbox, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+        text_pos = tuple(pts[0][0])
+        cv2.putText(img, text, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+    return img
 
+def draw_fitted_curves_on_image(img, text_lines, curve_degree=2):
     for line in text_lines:
         if len(line) < curve_degree + 1:
             continue
@@ -46,11 +54,9 @@ def draw_fitted_curves_on_image(image_path, text_lines, curve_degree=2, output_p
             cv2.polylines(img, [points.reshape((-1, 1, 2))], isClosed=False, color=(0, 0, 255), thickness=2)
         except Exception as e:
             print(f"Curve fitting failed for a line: {e}")
+    return img
 
-    cv2.imwrite(output_path, img)
-    print(f"[✔] Saved image with curves: {output_path}")
-
-def detect_and_fit_text_curves(image_path, output_image="output_with_curves.png", langs=['en'], curve_degree=2):
+def detect_and_fit_text_curves(image_path, output_image="output_full.png", langs=['en'], curve_degree=2):
     preprocessed_path = preprocess_image_for_ocr(image_path)
     reader = easyocr.Reader(langs, gpu=False)
     result = reader.readtext(preprocessed_path)
@@ -65,10 +71,15 @@ def detect_and_fit_text_curves(image_path, output_image="output_with_curves.png"
         centroids.append((cx, cy))
 
     text_lines = group_text_by_lines(centroids, eps=60, min_samples=2)
-    draw_fitted_curves_on_image(image_path, text_lines, curve_degree, output_image)
+    img = cv2.imread(image_path)
+    img = draw_bounding_boxes_and_text(img, result)
+    img = draw_fitted_curves_on_image(img, text_lines, curve_degree)
 
-# ---- Entry Point ----
+    cv2.imwrite(output_image, img)
+    print(f"[✔] Output image saved: {output_image}")
+
+# ---- Run this block directly ----
 if __name__ == "__main__":
-    input_image = "curve1.jpg"             # Replace with your input
-    output_image = "output_curve_text.png" # Result image
+    input_image = "curve1.jpg"               # Replace with your file
+    output_image = "output_curve_full.png"   # Final result
     detect_and_fit_text_curves(input_image, output_image)
