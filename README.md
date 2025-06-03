@@ -1,54 +1,77 @@
 import cv2
 import numpy as np
 import easyocr
+import torch
 
-def fit_curve_through_points(points, degree=2):
-    """Fits a polynomial curve through the given points."""
-    if len(points) < degree + 1:
-        return None
-    x = [pt[0] for pt in points]
-    y = [pt[1] for pt in points]
-    coeffs = np.polyfit(x, y, degree)
-    poly = np.poly1d(coeffs)
-    x_new = np.linspace(min(x), max(x), 100)
-    y_new = poly(x_new)
-    return np.array([[int(xi), int(yi)] for xi, yi in zip(x_new, y_new)], dtype=np.int32)
+# Initialize EasyOCR
+reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
 
-def draw_text_curve(img_path, output_path="output_curve_easyocr.png", degree=2):
-    reader = easyocr.Reader(['en'], gpu=False)
-    img = cv2.imread(img_path)
-    img_draw = img.copy()
-    h_img, w_img = img.shape[:2]
+def detect_mser_chars(cropped_img, min_area=30, max_area=5000):
+    gray = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
+    mser = cv2.MSER_create()
+    mser.setMinArea(min_area)
+    mser.setMaxArea(max_area)
+    
+    regions, bboxes = mser.detectRegions(gray)
+    
+    # Filter simple size/aspect-based bboxes
+    filtered = []
+    for (x, y, w, h) in bboxes:
+        if w < 5 or h < 5 or w > 300 or h > 300:
+            continue
+        aspect = w / float(h)
+        if not (0.1 < aspect < 10):
+            continue
+        cx = x + w // 2
+        cy = y + h // 2
+        filtered.append(((cx, cy), (x, y, w, h)))
+    
+    return filtered
 
+def draw_curve(img, centroids, degree=2, color=(0, 0, 255), thickness=2):
+    if len(centroids) < degree + 1:
+        return
+    
+    centroids = sorted(centroids, key=lambda p: p[0])  # sort by x
+    x_coords = np.array([p[0] for p in centroids])
+    y_coords = np.array([p[1] for p in centroids])
+    
+    try:
+        coeffs = np.polyfit(x_coords, y_coords, degree)
+        poly = np.poly1d(coeffs)
+        x_vals = np.linspace(x_coords.min(), x_coords.max(), 100)
+        y_vals = poly(x_vals)
+        curve_points = np.array([[int(x), int(y)] for x, y in zip(x_vals, y_vals)], np.int32)
+        cv2.polylines(img, [curve_points.reshape(-1, 1, 2)], isClosed=False, color=color, thickness=thickness)
+    except np.linalg.LinAlgError:
+        pass  # skip curve if polyfit fails
+
+def process_image(image_path, output_path):
+    img = cv2.imread(image_path)
     results = reader.readtext(img)
 
-    for (bbox, text, conf) in results:
-        bbox_np = np.array(bbox, dtype=np.int32)
-        x_min = max(int(min(p[0] for p in bbox)), 0)
-        y_min = max(int(min(p[1] for p in bbox)), 0)
-        x_max = min(int(max(p[0] for p in bbox)), w_img)
-        y_max = min(int(max(p[1] for p in bbox)), h_img)
-
-        cropped = img[y_min:y_max, x_min:x_max]
-        char_results = reader.readtext(cropped, detail=1, paragraph=False)
-
+    for bbox, text, conf in results:
+        pts = np.array(bbox).astype(int)
+        x_min = np.min(pts[:, 0])
+        y_min = np.min(pts[:, 1])
+        x_max = np.max(pts[:, 0])
+        y_max = np.max(pts[:, 1])
+        
+        # Crop the word-level region
+        word_crop = img[y_min:y_max, x_min:x_max]
+        mser_chars = detect_mser_chars(word_crop)
+        
+        # Draw MSER character boxes and collect centroids
         char_centroids = []
-        for (cbbox, ctext, cconf) in char_results:
-            c_pts = np.array(cbbox, dtype=np.int32)
-            cx = int(np.mean(c_pts[:, 0])) + x_min
-            cy = int(np.mean(c_pts[:, 1])) + y_min
-            char_centroids.append((cx, cy))
+        for (cx, cy), (x, y, w, h) in mser_chars:
+            cv2.rectangle(img, (x_min + x, y_min + y), (x_min + x + w, y_min + y + h), (0, 255, 0), 1)
+            char_centroids.append((x_min + cx, y_min + cy))
+        
+        # Draw curve through centroids
+        draw_curve(img, char_centroids)
 
-        if len(char_centroids) >= degree + 1:
-            curve_pts = fit_curve_through_points(char_centroids, degree=degree)
-            if curve_pts is not None:
-                cv2.polylines(img_draw, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
+    cv2.imwrite(output_path, img)
+    print(f"Saved output to {output_path}")
 
-        # Draw the word box
-        cv2.polylines(img_draw, [bbox_np.reshape(-1, 1, 2)], isClosed=True, color=(0, 255, 0), thickness=2)
-
-    cv2.imwrite(output_path, img_draw)
-    print(f"[✓] Saved output with curves to {output_path}")
-
-# Example Usage
-draw_text_curve("curve1.jpg", "output_curved_easyocr.png", degree=2)
+# === Main Execution ===
+process_image("your_input_image.jpg", "output_with_curves.png")
