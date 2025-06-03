@@ -1,70 +1,54 @@
 import cv2
-import easyocr
 import numpy as np
-import torch
+import easyocr
 
-def fit_curve_through_text(res, curve_degree=2, color=(0, 0, 255)):
-    """Fit a curve through the center points of the bounding boxes."""
-    if len(res) < curve_degree + 1:
-        return None  # Not enough points to fit curve
-
-    # Get center points of bounding boxes
-    centers = []
-    for bbox, _, _ in res:
-        xs = [point[0] for point in bbox]
-        ys = [point[1] for point in bbox]
-        center_x = sum(xs) / 4
-        center_y = sum(ys) / 4
-        centers.append((center_x, center_y))
-
-    centers = sorted(centers, key=lambda x: x[0])  # sort left to right
-
-    x_coords = np.array([pt[0] for pt in centers])
-    y_coords = np.array([pt[1] for pt in centers])
-
-    try:
-        coeffs = np.polyfit(x_coords, y_coords, curve_degree)
-        poly = np.poly1d(coeffs)
-
-        x_new = np.linspace(x_coords.min(), x_coords.max(), 100)
-        y_new = poly(x_new)
-        points = np.array([[int(x), int(y)] for x, y in zip(x_new, y_new)], dtype=np.int32)
-        return points
-    except:
+def fit_curve_through_points(points, degree=2):
+    """Fits a polynomial curve through the given points."""
+    if len(points) < degree + 1:
         return None
+    x = [pt[0] for pt in points]
+    y = [pt[1] for pt in points]
+    coeffs = np.polyfit(x, y, degree)
+    poly = np.poly1d(coeffs)
+    x_new = np.linspace(min(x), max(x), 100)
+    y_new = poly(x_new)
+    return np.array([[int(xi), int(yi)] for xi, yi in zip(x_new, y_new)], dtype=np.int32)
 
-def detect_and_draw_easyocr(image_path, output_path="output_easyocr.png", draw_curve=True):
-    # Load image
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"Error loading image: {image_path}")
-        return
+def draw_text_curve(img_path, output_path="output_curve_easyocr.png", degree=2):
+    reader = easyocr.Reader(['en'], gpu=False)
+    img = cv2.imread(img_path)
+    img_draw = img.copy()
+    h_img, w_img = img.shape[:2]
 
-    # Convert image to RGB for easyocr
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    results = reader.readtext(img)
 
-    # Initialize EasyOCR
-    reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+    for (bbox, text, conf) in results:
+        bbox_np = np.array(bbox, dtype=np.int32)
+        x_min = max(int(min(p[0] for p in bbox)), 0)
+        y_min = max(int(min(p[1] for p in bbox)), 0)
+        x_max = min(int(max(p[0] for p in bbox)), w_img)
+        y_max = min(int(max(p[1] for p in bbox)), h_img)
 
-    # Detect text
-    res = reader.readtext(img_rgb)
+        cropped = img[y_min:y_max, x_min:x_max]
+        char_results = reader.readtext(cropped, detail=1, paragraph=False)
 
-    # Draw bounding boxes
-    for bbox, text, conf in res:
-        bbox = np.array(bbox, dtype=np.int32)
-        cv2.polylines(img, [bbox], isClosed=True, color=(0, 255, 0), thickness=2)
+        char_centroids = []
+        for (cbbox, ctext, cconf) in char_results:
+            c_pts = np.array(cbbox, dtype=np.int32)
+            cx = int(np.mean(c_pts[:, 0])) + x_min
+            cy = int(np.mean(c_pts[:, 1])) + y_min
+            char_centroids.append((cx, cy))
 
-    # Optionally draw a curve through detected text line
-    if draw_curve:
-        curve_pts = fit_curve_through_text(res, curve_degree=2)
-        if curve_pts is not None:
-            cv2.polylines(img, [curve_pts], isClosed=False, color=(0, 0, 255), thickness=2)
+        if len(char_centroids) >= degree + 1:
+            curve_pts = fit_curve_through_points(char_centroids, degree=degree)
+            if curve_pts is not None:
+                cv2.polylines(img_draw, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
 
-    # Save and display output
-    cv2.imwrite(output_path, img)
-    print(f"Output saved to: {output_path}")
+        # Draw the word box
+        cv2.polylines(img_draw, [bbox_np.reshape(-1, 1, 2)], isClosed=True, color=(0, 255, 0), thickness=2)
 
-# --- MAIN USAGE ---
-if __name__ == "__main__":
-    image_file = "your_image.jpg"  # <- change this
-    detect_and_draw_easyocr(image_file, "output_easyocr_result.png")
+    cv2.imwrite(output_path, img_draw)
+    print(f"[✓] Saved output with curves to {output_path}")
+
+# Example Usage
+draw_text_curve("curve1.jpg", "output_curved_easyocr.png", degree=2)
