@@ -2,46 +2,45 @@ import cv2
 import numpy as np
 import easyocr
 
-# Load image
-image = cv2.imread("your_image.jpg")
-image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-# Initialize OCR
+# Initialize OCR reader
 reader = easyocr.Reader(['en'], gpu=False)
-results = reader.readtext(image_rgb)
 
-# Make a copy for drawing
-output = image.copy()
+def segment_characters_in_word(image, word_bbox):
+    # Extract word patch using bounding box
+    pts = np.array(word_bbox).astype(np.int32)
+    x, y, w, h = cv2.boundingRect(pts)
+    word_img = image[y:y+h, x:x+w]
 
-for (bbox, text, conf) in results:
-    bbox = np.array(bbox).astype(int)
-
-    # Draw OCR word-level bounding box (in blue)
-    cv2.polylines(output, [bbox], isClosed=True, color=(255, 0, 0), thickness=2)
-
-    # Crop the word region
-    x_min = np.min(bbox[:, 0])
-    x_max = np.max(bbox[:, 0])
-    y_min = np.min(bbox[:, 1])
-    y_max = np.max(bbox[:, 1])
-    word_crop = image[y_min:y_max, x_min:x_max]
-
-    # Convert to grayscale and threshold
-    gray = cv2.cvtColor(word_crop, cv2.COLOR_BGR2GRAY)
+    # Convert to grayscale and binarize
+    gray = cv2.cvtColor(word_img, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # Connected component segmentation
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    # Find contours which should correspond to characters
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    for i in range(1, num_labels):  # skip background
-        x, y, w, h, area = stats[i]
-        cx, cy = centroids[i]
+    char_boxes = []
+    for cnt in contours:
+        cx, cy, cw, ch = cv2.boundingRect(cnt)
+        if cw > 5 and ch > 5:  # Filter out small noise
+            char_boxes.append([x+cx, y+cy, x+cx+cw, y+cy+ch])
 
-        # Filter out noise
-        if area > 30 and w > 2 and h > 5:
-            # Draw green boxes for character-level segmentation (adjust to original coordinates)
-            cv2.rectangle(output, (x + x_min, y + y_min), (x + x_min + w, y + y_min + h), (0, 255, 0), 1)
-            cv2.circle(output, (int(cx + x_min), int(cy + y_min)), 1, (0, 0, 255), -1)
+    return char_boxes
 
-# Save final result
-cv2.imwrite("ocr_connected_components_output.jpg", output)
+def process_image(image_path):
+    image = cv2.imread(image_path)
+    results = reader.readtext(image)
+
+    for (bbox, text, conf) in results:
+        pts = np.array(bbox).astype(np.int32)
+        cv2.polylines(image, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+
+        # Segment characters inside this word bbox
+        char_boxes = segment_characters_in_word(image, bbox)
+        for (x1, y1, x2, y2) in char_boxes:
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+
+    cv2.imwrite("output_character_segmented.png", image)
+    print("Saved to output_character_segmented.png")
+
+# Example run
+process_image("your_image_path.jpg")
