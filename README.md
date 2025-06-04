@@ -1,55 +1,69 @@
 import cv2
 import easyocr
 import numpy as np
-import matplotlib.pyplot as plt
 
-# Preprocessing function (grayscale + CLAHE + resize)
 def preprocess(img):
+    # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Apply CLAHE to improve contrast
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
     cl_img = clahe.apply(gray)
+    # Resize image (scale by 2)
     resized = cv2.resize(cl_img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    return resized
+    # Make sure dtype is uint8
+    return resized.astype(np.uint8)
 
-# Function to get center of a box
-def box_center(box):
-    return np.mean(box, axis=0)
+def draw_boxes(img, boxes, color=(0,255,0), thickness=2, label_boxes=None, label_color=(0,255,0), label_scale=0.7):
+    for i, box in enumerate(boxes):
+        pts = np.array(box, dtype=np.int32).reshape((-1,1,2))
+        cv2.polylines(img, [pts], isClosed=True, color=color, thickness=thickness)
+        if label_boxes and i < len(label_boxes):
+            text = label_boxes[i]
+            cv2.putText(img, text, tuple(pts[0][0]), cv2.FONT_HERSHEY_SIMPLEX, label_scale, label_color, 2)
 
-# Initialize reader
-reader = easyocr.Reader(['en'])
+def main():
+    image_path = 'your_image.jpg'  # <-- Replace with your image path
+    img_orig = cv2.imread(image_path)
+    if img_orig is None:
+        print("Error: Image not found or cannot be loaded.")
+        return
 
-# Load and preprocess image
-image_path = 'your_image.jpg'  # replace with your image path
-img_original = cv2.imread(image_path)
-img_preprocessed = preprocess(img_original)
+    img_pre = preprocess(img_orig)
 
-# Get word-level detection
-word_results = reader.readtext(img_preprocessed, detail=2)
+    reader = easyocr.Reader(['en'])
 
-# Get character-level detection (hidden EasyOCR function)
-char_results = reader.get_textbox(img_preprocessed, x_ths=0.2, y_ths=0.6, width_ths=0.8, decoder='beamsearch')
+    # Word-level detection
+    word_results = reader.readtext(img_pre, detail=2)
 
-# Copy image for drawing
-img_draw = cv2.cvtColor(img_preprocessed, cv2.COLOR_GRAY2BGR)
+    # Character-level detection using get_textbox (hidden API)
+    char_results = reader.get_textbox(
+        img_pre,
+        x_ths=0.2,
+        y_ths=0.6,
+        width_ths=0.8,
+        decoder='beamsearch'
+    )
 
-# Draw word bounding boxes in GREEN
-for word_bbox, word_text, word_prob in word_results:
-    word_box_np = np.array(word_bbox, dtype=np.int32)
-    cv2.polylines(img_draw, [word_box_np.reshape((-1,1,2))], isClosed=True, color=(0,255,0), thickness=2)
-    # Put text label
-    cv2.putText(img_draw, word_text, tuple(word_box_np[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+    # Prepare image for drawing (convert grayscale to BGR)
+    img_draw = cv2.cvtColor(img_pre, cv2.COLOR_GRAY2BGR)
 
-# Draw character bounding boxes in BLUE
-for char_bbox, char_text, char_prob in char_results:
-    char_box_np = np.array(char_bbox, dtype=np.int32)
-    cv2.polylines(img_draw, [char_box_np.reshape((-1,1,2))], isClosed=True, color=(255,0,0), thickness=1)
-    # Optionally, put character text label
-    # cv2.putText(img_draw, char_text, tuple(char_box_np[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,0,0), 1)
+    # Draw word boxes in GREEN with labels
+    word_boxes = [res[0] for res in word_results]
+    word_texts = [res[1] for res in word_results]
+    draw_boxes(img_draw, word_boxes, color=(0,255,0), thickness=2, label_boxes=word_texts, label_color=(0,255,0), label_scale=0.7)
 
-# Show image with all bounding boxes
-cv2.imshow("Word and Character Bounding Boxes", img_draw)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+    # Draw character boxes in BLUE (no labels)
+    char_boxes = [res[0] for res in char_results]
+    draw_boxes(img_draw, char_boxes, color=(255,0,0), thickness=1)
 
-# Save result image if you want
-cv2.imwrite("highlighted_bounding_boxes.jpg", img_draw)
+    # Show image with bounding boxes
+    cv2.imshow("Word (green) and Character (blue) Bounding Boxes", img_draw)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    # Save output image if you want
+    cv2.imwrite("output_bounding_boxes.jpg", img_draw)
+    print("Output saved as output_bounding_boxes.jpg")
+
+if __name__ == "__main__":
+    main()
