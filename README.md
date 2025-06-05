@@ -1,1 +1,2 @@
-(craft-env) C:\Users\rohit\CRAFT-pytorch>python test.py --trained_model craft_mlt_25k.pth --refiner_model craft_refiner_CTW1500.pth --test_folder ./test_images --cuda False
+pip install torch==1.10.0+cpu torchvision==0.11.3+cpu -f https://download.pytorch.org/whl/torch_stable.html
+pip install opencv-python scikit-image numpy matplotlib scipy Pillow requests
