@@ -1,6 +1,1 @@
-python test.py \
-    --trained_model=craft_mlt_25k.pth \
-    --refine \
-    --refiner=craft_refiner_CTW1500.pth \
-    --image_folder=./test_images \
-    --cuda=False
+(craft-env) C:\Users\rohit\CRAFT-pytorch>python test.py --trained_model craft_mlt_25k.pth --refiner_model craft_refiner_CTW1500.pth --test_folder ./test_images --cuda False
