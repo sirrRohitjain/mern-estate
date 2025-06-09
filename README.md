@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-from scipy.interpolate import splprep, splev
 import os
 
 def preprocess_roi(roi_gray, save_debug=False, debug_name="roi_grayscale.png"):
@@ -11,10 +10,11 @@ def preprocess_roi(roi_gray, save_debug=False, debug_name="roi_grayscale.png"):
     roi_blur = cv2.GaussianBlur(roi_eq, (3, 3), 0)
     return roi_blur
 
-def detect_text_curve(image_path, roi_bbox,
-                      output_image_path="output_text_shape.png",
-                      min_area=30, max_area=10000, delta=5,
-                      min_chars_in_line=4):
+def detect_text_curve_polyfit(image_path, roi_bbox,
+                               output_image_path="output_text_shape.png",
+                               min_area=30, max_area=10000, delta=5,
+                               min_chars_in_line=4,
+                               residual_threshold=15):
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError("Could not load image. Check the path.")
@@ -45,9 +45,8 @@ def detect_text_curve(image_path, roi_bbox,
         cv2.rectangle(roi_color, (x, y), (x + w, y + h), (0, 255, 0), 1)
         cv2.circle(roi_color, (int(cx), int(cy)), 2, (0, 0, 255), -1)
 
-    if len(char_centroids) < min_chars_in_line:
+    if len(char_centroids) < 2:
         print(f"Only {len(char_centroids)} characters found — skipping curve fitting.")
-        print("Still saving image with MSER boxes and centroids.")
         img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
         cv2.imwrite(output_image_path, img)
         print(f"Output saved to: {output_image_path}")
@@ -60,32 +59,48 @@ def detect_text_curve(image_path, roi_bbox,
     x_coords = np.array(x_coords, dtype=np.float64)
     y_coords = np.array(y_coords, dtype=np.float64)
 
-    try:
-        # Fit B-spline curve
-        tck, u = splprep([x_coords, y_coords], s=5, k=min(3, len(x_coords) - 1))
-        u_new = np.linspace(0, 1, 200)
-        x_spline, y_spline = splev(u_new, tck)
+    # Fit initial polynomial to all points
+    degree = 2
+    coeffs = np.polyfit(x_coords, y_coords, deg=degree)
+    poly_fn = np.poly1d(coeffs)
 
-        curve_pts = np.array([[int(x), int(y)] for x, y in zip(x_spline, y_spline)])
-        cv2.polylines(roi_color, [curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
-        shape_type = "CURVED"
-    except Exception as e:
-        print(f"Curve fitting failed: {e}")
+    # Compute residuals (vertical error)
+    y_fit = poly_fn(x_coords)
+    residuals = np.abs(y_coords - y_fit)
+
+    # Filter out outliers
+    inlier_mask = residuals < residual_threshold
+    x_inliers = x_coords[inlier_mask]
+    y_inliers = y_coords[inlier_mask]
+
+    if len(x_inliers) < 3:
+        print("Too few inliers for curve — drawing fallback straight line.")
         pt1 = (int(x_coords[0]), int(y_coords[0]))
         pt2 = (int(x_coords[-1]), int(y_coords[-1]))
         cv2.line(roi_color, pt1, pt2, (255, 0, 0), 2)
         shape_type = "STRAIGHT (fallback)"
+    else:
+        # Fit again with inliers
+        inlier_coeffs = np.polyfit(x_inliers, y_inliers, deg=degree)
+        inlier_poly = np.poly1d(inlier_coeffs)
+
+        x_curve = np.linspace(min(x_inliers), max(x_inliers), 200)
+        y_curve = inlier_poly(x_curve)
+
+        curve_points = np.array([[int(x), int(y)] for x, y in zip(x_curve, y_curve)])
+        cv2.polylines(roi_color, [curve_points.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
+        shape_type = f"CURVED (polyfit, {len(x_inliers)} inliers)"
 
     img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
     cv2.imwrite(output_image_path, img)
 
-    print(f"Text shape detected: {shape_type}")
-    print(f"Output saved to: {output_image_path}")
+    print(f"Detected text shape: {shape_type}")
+    print(f"Saved output to: {output_image_path}")
     print(f"Grayscale ROI saved to: {preprocess_debug_name}")
 
 # -------- Example usage ----------
 if __name__ == "__main__":
-    image_file = "curve1.jpg"  # Replace with your image file
-    roi_box = (228, 130, 143, 43)  # Replace with your text region (x, y, w, h)
+    image_file = "curve1.jpg"  # Replace with your file
+    roi_box = (228, 130, 143, 43)  # Replace with your ROI (x, y, w, h)
 
-    detect_text_curve(image_file, roi_box, output_image_path="output_detected_curve.png")
+    detect_text_curve_polyfit(image_file, roi_box, output_image_path="output_polyfit_curve.png")
