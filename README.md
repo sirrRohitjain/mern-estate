@@ -1,131 +1,115 @@
 import cv2
 import numpy as np
-import os
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist, squareform
 
-def rectangles_overlap(rect1, rect2):
-    x1, y1, w1, h1 = rect1
-    x2, y2, w2, h2 = rect2
-    return not (x1 + w1 < x2 or x2 + w2 < x1 or y1 + h1 < y2 or y2 + h2 < y1)
-
-def merge_rectangles(rect1, rect2):
-    x1, y1, w1, h1 = rect1
-    x2, y2, w2, h2 = rect2
-    x = min(x1, x2)
-    y = min(y1, y2)
-    x_max = max(x1 + w1, x2 + w2)
-    y_max = max(y1 + h1, y2 + h2)
-    return (x, y, x_max - x, y_max - y)
-
-def preprocess_roi(roi_gray, save_debug=False, debug_name="roi_grayscale.png"):
-    if save_debug:
-        cv2.imwrite(debug_name, roi_gray)
-
+# ----------------------------------------
+# Preprocessing: CLAHE + Blur + Edges
+# ----------------------------------------
+def preprocess_roi(gray_roi):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    roi_eq = clahe.apply(roi_gray)
-    roi_blur = cv2.GaussianBlur(roi_eq, (3, 3), 0)
+    eq_img = clahe.apply(gray_roi)
+    blur_img = cv2.GaussianBlur(eq_img, (3, 3), 0)
+    edges = cv2.Canny(blur_img, 50, 150)
+    return edges
 
-    edges = cv2.Canny(roi_blur, 50, 150)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
-    morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+# ----------------------------------------
+# Weighted Euclidean Distance
+# ----------------------------------------
+def weighted_distance(u, v, weights):
+    return np.sqrt(np.sum(weights * (u - v) ** 2))
 
-    return morph
-
-def count_points_on_curve(x_curve, y_curve, centroids, max_dist=10):
-    count = 0
-    for cx, cy in centroids:
-        for xc, yc in zip(x_curve, y_curve):
-            if np.hypot(cx - xc, cy - yc) < max_dist:
-                count += 1
-                break
-    return count
-
-def detect_text_curve_max_coverage(image_path, roi_bbox,
-                                   output_image_path="output_text_shape.png",
-                                   min_area=30, max_area=10000, delta=5,
-                                   polyfit_degree_options=(1, 2, 3), max_dist=10):
+# ----------------------------------------
+# Main Function: MSER + Clustering
+# ----------------------------------------
+def detect_text_with_hierarchical_clustering(image_path, roi_bbox,
+                                              output_image_path="output.png",
+                                              min_area=30,
+                                              max_area=10000,
+                                              distance_thresh=50,
+                                              weights=None):
     img = cv2.imread(image_path)
     if img is None:
-        raise ValueError("Could not load image. Check the path.")
+        raise ValueError("Failed to load image.")
 
-    x_roi, y_roi, w_roi, h_roi = roi_bbox
-    roi_color = img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi].copy()
-    roi_gray = cv2.cvtColor(roi_color, cv2.COLOR_BGR2GRAY)
+    x, y, w, h = roi_bbox
+    roi = img[y:y+h, x:x+w]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    processed = preprocess_roi(gray)
 
-    preprocess_debug_name = os.path.splitext(output_image_path)[0] + "_grayscale.png"
-    roi_processed = preprocess_roi(roi_gray, save_debug=True, debug_name=preprocess_debug_name)
+    # MSER Detection
+    mser = cv2.MSER_create(_min_area=min_area, _max_area=max_area)
+    regions, boxes = mser.detectRegions(processed)
 
-    mser = cv2.MSER_create()
-    mser.setMinArea(min_area)
-    mser.setMaxArea(max_area)
-    mser.setDelta(delta)
-
-    regions, bboxes = mser.detectRegions(roi_processed)
-
-    # Filter and merge overlapping boxes
-    filtered_boxes = []
-    for box in bboxes:
-        x, y, w, h = box
-        if w < 5 or h < 5 or w > 500 or h > 500:
+    char_boxes = []
+    features = []
+    for box in boxes:
+        x_box, y_box, w_box, h_box = box
+        if w_box < 5 or h_box < 5:
             continue
-        merged = False
-        for i, existing in enumerate(filtered_boxes):
-            if rectangles_overlap(existing, box):
-                filtered_boxes[i] = merge_rectangles(existing, box)
-                merged = True
-                break
-        if not merged:
-            filtered_boxes.append(box)
+        aspect_ratio = w_box / float(h_box)
+        if not (0.25 < aspect_ratio < 5.0):
+            continue
+        cx = x_box + w_box / 2
+        cy = y_box + h_box / 2
+        char_boxes.append((x_box, y_box, w_box, h_box))
+        features.append([cx, cy, w_box, h_box])
 
-    char_centroids = []
-    for box in filtered_boxes:
-        x, y, w, h = box
-        cx = x + w // 2
-        cy = y + h // 2
-        char_centroids.append((float(cx), float(cy)))
-        cv2.rectangle(roi_color, (x, y), (x + w, y + h), (0, 255, 0), 1)
-        cv2.circle(roi_color, (int(cx), int(cy)), 2, (0, 0, 255), -1)
-
-    if len(char_centroids) < 3:
-        print("Not enough centroids for curve fitting.")
-        img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
-        cv2.imwrite(output_image_path, img)
+    if len(features) < 3:
+        print("Not enough MSER boxes for clustering.")
         return
 
-    centroids_sorted = sorted(char_centroids, key=lambda pt: pt[0])
-    cx = np.array([pt[0] for pt in centroids_sorted])
-    cy = np.array([pt[1] for pt in centroids_sorted])
+    X = np.array(features)
+    weights = np.array(weights or [1.0, 0.5, 0.2, 0.2])  # Default weights
 
-    best_curve_pts = None
-    best_covered = -1
-    best_degree = None
+    # Distance matrix using custom weighted distance
+    dist_matrix = squareform(pdist(X, lambda u, v: weighted_distance(u, v, weights)))
+    Z = linkage(dist_matrix, method='average')
+    labels = fcluster(Z, t=distance_thresh, criterion='distance')
 
-    for degree in polyfit_degree_options:
-        if len(cx) <= degree:
-            continue
+    output_roi = roi.copy()
+    unique_labels = np.unique(labels)
+
+    for lbl in unique_labels:
+        indices = np.where(labels == lbl)[0]
+        if len(indices) < 3:
+            continue  # Skip small clusters
+
+        # Draw bounding boxes
+        for i in indices:
+            x_box, y_box, w_box, h_box = char_boxes[i]
+            cv2.rectangle(output_roi, (x_box, y_box), (x_box + w_box, y_box + h_box), (0, 255, 0), 1)
+
+        # Fit a curve to centroids
+        cluster_centroids = [(X[i][0], X[i][1]) for i in indices]
+        cluster_centroids = sorted(cluster_centroids, key=lambda pt: pt[0])
+        cx_vals = np.array([pt[0] for pt in cluster_centroids])
+        cy_vals = np.array([pt[1] for pt in cluster_centroids])
+
         try:
-            coeffs = np.polyfit(cx, cy, degree)
+            coeffs = np.polyfit(cx_vals, cy_vals, deg=2)  # Quadratic fit
             poly = np.poly1d(coeffs)
-            x_curve = np.linspace(min(cx), max(cx), 200)
+            x_curve = np.linspace(min(cx_vals), max(cx_vals), 200)
             y_curve = poly(x_curve)
-            covered = count_points_on_curve(x_curve, y_curve, centroids_sorted, max_dist)
-            if covered > best_covered:
-                best_curve_pts = np.array([[int(x), int(y)] for x, y in zip(x_curve, y_curve)])
-                best_covered = covered
-                best_degree = degree
-        except Exception:
-            continue
+            pts = np.array([[int(x), int(y)] for x, y in zip(x_curve, y_curve)])
+            cv2.polylines(output_roi, [pts.reshape(-1, 1, 2)], isClosed=False, color=(0, 0, 255), thickness=2)
+        except Exception as e:
+            print("Curve fitting failed for cluster:", e)
 
-    if best_curve_pts is not None:
-        cv2.polylines(roi_color, [best_curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
-        shape_type = f"CURVED (degree={best_degree}, coverage={best_covered})"
-    else:
-        pt1 = (int(cx[0]), int(cy[0]))
-        pt2 = (int(cx[-1]), int(cy[-1]))
-        cv2.line(roi_color, pt1, pt2, (255, 0, 0), 2)
-        shape_type = "STRAIGHT (fallback)"
-
-    img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
+    img[y:y+h, x:x+w] = output_roi
     cv2.imwrite(output_image_path, img)
-    print(f"Detected text shape: {shape_type}")
-    print(f"Saved output to: {output_image_path}")
-    print(f"Grayscale ROI saved to: {preprocess_debug_name}")
+    print(f"[✔] Output saved to {output_image_path}")
+
+# ----------------------------------------
+# Example Usage
+# ----------------------------------------
+if __name__ == "__main__":
+    detect_text_with_hierarchical_clustering(
+        image_path="curve1.jpg",  # 🔁 Replace with your image file
+        roi_bbox=(228, 130, 143, 43),  # 🔁 Replace with your ROI (x, y, w, h)
+        output_image_path="output_detected_text.png",
+        min_area=30,
+        max_area=10000,
+        distance_thresh=50,
+        weights=[1.0, 0.5, 0.2, 0.2],  # Tunable: [cx, cy, w, h]
+    )
