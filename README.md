@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import os
-from itertools import combinations
 
 def preprocess_roi(roi_gray, save_debug=False, debug_name="roi_grayscale.png"):
     if save_debug:
@@ -40,13 +39,33 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
     mser.setMaxArea(max_area)
     mser.setDelta(delta)
 
-    regions, bboxes = mser.detectRegions(roi_processed)
+    regions, _ = mser.detectRegions(roi_processed)
 
     char_centroids = []
-    for box in bboxes:
-        x, y, w, h = box
+
+    for region in regions:
+        region = np.array(region).reshape(-1, 1, 2).astype(np.int32)
+        x, y, w, h = cv2.boundingRect(region)
+
+        # Basic size constraints
         if w < 5 or h < 5 or w > 500 or h > 500:
             continue
+
+        # Contour-based geometric filtering
+        area = cv2.contourArea(region)
+        rect_area = w * h
+        if rect_area == 0:
+            continue
+        extent = float(area) / rect_area
+        aspect_ratio = float(w) / h
+
+        # Filter out likely non-text blobs
+        if extent < 0.2 or extent > 1.0:
+            continue
+        if aspect_ratio < 0.2 or aspect_ratio > 5.0:
+            continue
+
+        # Add centroid if region is accepted
         cx = x + w // 2
         cy = y + h // 2
         char_centroids.append((float(cx), float(cy)))
@@ -54,11 +73,12 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
         cv2.circle(roi_color, (int(cx), int(cy)), 2, (0, 0, 255), -1)
 
     if len(char_centroids) < 3:
-        print("Not enough centroids for curve fitting.")
+        print("Not enough valid centroids for curve fitting.")
         img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
         cv2.imwrite(output_image_path, img)
         return
 
+    # Sort centroids left to right
     centroids_sorted = sorted(char_centroids, key=lambda pt: pt[0])
     cx = np.array([pt[0] for pt in centroids_sorted])
     cy = np.array([pt[1] for pt in centroids_sorted])
@@ -67,6 +87,7 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
     best_covered = -1
     best_degree = None
 
+    # Try fitting polynomials of different degrees
     for degree in polyfit_degree_options:
         if len(cx) <= degree:
             continue
@@ -83,6 +104,7 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
         except Exception as e:
             continue
 
+    # Draw final curve or fallback line
     if best_curve_pts is not None:
         cv2.polylines(roi_color, [best_curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
         shape_type = f"CURVED (degree={best_degree}, coverage={best_covered})"
@@ -92,6 +114,7 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
         cv2.line(roi_color, pt1, pt2, (255, 0, 0), 2)
         shape_type = "STRAIGHT (fallback)"
 
+    # Save final result
     img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
     cv2.imwrite(output_image_path, img)
     print(f"Detected text shape: {shape_type}")
@@ -100,30 +123,6 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
 
 # Example usage
 if __name__ == "__main__":
-    image_file = "curve1.jpg"  # Replace with your image file
-    roi_box = (228, 130, 143, 43)  # Replace with your ROI (x, y, w, h)
+    image_file = "curve1.jpg"  # Replace with your actual image file
+    roi_box = (228, 130, 143, 43)  # Replace with your region (x, y, w, h)
     detect_text_curve_max_coverage(image_file, roi_box, output_image_path="output_detected_curve.png")
-
-
-✅ Here is the complete updated code:
-
-It computes all centroids first.
-
-Tries fitting multiple polynomial curves (degree 1–3).
-
-Computes how many centroids lie near each curve.
-
-Draws the curve with the maximum number of centroids covered.
-
-Includes a fallback line if no good curve is found.
-
-
-Let me know if you want to:
-
-Visualize centroid-to-curve distance lines,
-
-Extend this for multiple ROIs,
-
-Or switch to splines or RANSAC instead of polyfit.
-
-
