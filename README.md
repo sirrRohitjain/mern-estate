@@ -2,13 +2,33 @@ import cv2
 import numpy as np
 import os
 
+def rectangles_overlap(rect1, rect2):
+    x1, y1, w1, h1 = rect1
+    x2, y2, w2, h2 = rect2
+    return not (x1 + w1 < x2 or x2 + w2 < x1 or y1 + h1 < y2 or y2 + h2 < y1)
+
+def merge_rectangles(rect1, rect2):
+    x1, y1, w1, h1 = rect1
+    x2, y2, w2, h2 = rect2
+    x = min(x1, x2)
+    y = min(y1, y2)
+    x_max = max(x1 + w1, x2 + w2)
+    y_max = max(y1 + h1, y2 + h2)
+    return (x, y, x_max - x, y_max - y)
+
 def preprocess_roi(roi_gray, save_debug=False, debug_name="roi_grayscale.png"):
     if save_debug:
         cv2.imwrite(debug_name, roi_gray)
+
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     roi_eq = clahe.apply(roi_gray)
     roi_blur = cv2.GaussianBlur(roi_eq, (3, 3), 0)
-    return roi_blur
+
+    edges = cv2.Canny(roi_blur, 50, 150)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1))
+    morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    return morph
 
 def count_points_on_curve(x_curve, y_curve, centroids, max_dist=10):
     count = 0
@@ -39,33 +59,26 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
     mser.setMaxArea(max_area)
     mser.setDelta(delta)
 
-    regions, _ = mser.detectRegions(roi_processed)
+    regions, bboxes = mser.detectRegions(roi_processed)
 
-    char_centroids = []
-
-    for region in regions:
-        region = np.array(region).reshape(-1, 1, 2).astype(np.int32)
-        x, y, w, h = cv2.boundingRect(region)
-
-        # Basic size constraints
+    # Filter and merge overlapping boxes
+    filtered_boxes = []
+    for box in bboxes:
+        x, y, w, h = box
         if w < 5 or h < 5 or w > 500 or h > 500:
             continue
+        merged = False
+        for i, existing in enumerate(filtered_boxes):
+            if rectangles_overlap(existing, box):
+                filtered_boxes[i] = merge_rectangles(existing, box)
+                merged = True
+                break
+        if not merged:
+            filtered_boxes.append(box)
 
-        # Contour-based geometric filtering
-        area = cv2.contourArea(region)
-        rect_area = w * h
-        if rect_area == 0:
-            continue
-        extent = float(area) / rect_area
-        aspect_ratio = float(w) / h
-
-        # Filter out likely non-text blobs
-        if extent < 0.2 or extent > 1.0:
-            continue
-        if aspect_ratio < 0.2 or aspect_ratio > 5.0:
-            continue
-
-        # Add centroid if region is accepted
+    char_centroids = []
+    for box in filtered_boxes:
+        x, y, w, h = box
         cx = x + w // 2
         cy = y + h // 2
         char_centroids.append((float(cx), float(cy)))
@@ -73,12 +86,11 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
         cv2.circle(roi_color, (int(cx), int(cy)), 2, (0, 0, 255), -1)
 
     if len(char_centroids) < 3:
-        print("Not enough valid centroids for curve fitting.")
+        print("Not enough centroids for curve fitting.")
         img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
         cv2.imwrite(output_image_path, img)
         return
 
-    # Sort centroids left to right
     centroids_sorted = sorted(char_centroids, key=lambda pt: pt[0])
     cx = np.array([pt[0] for pt in centroids_sorted])
     cy = np.array([pt[1] for pt in centroids_sorted])
@@ -87,7 +99,6 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
     best_covered = -1
     best_degree = None
 
-    # Try fitting polynomials of different degrees
     for degree in polyfit_degree_options:
         if len(cx) <= degree:
             continue
@@ -101,10 +112,9 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
                 best_curve_pts = np.array([[int(x), int(y)] for x, y in zip(x_curve, y_curve)])
                 best_covered = covered
                 best_degree = degree
-        except Exception as e:
+        except Exception:
             continue
 
-    # Draw final curve or fallback line
     if best_curve_pts is not None:
         cv2.polylines(roi_color, [best_curve_pts.reshape(-1, 1, 2)], False, (0, 0, 255), 2)
         shape_type = f"CURVED (degree={best_degree}, coverage={best_covered})"
@@ -114,15 +124,8 @@ def detect_text_curve_max_coverage(image_path, roi_bbox,
         cv2.line(roi_color, pt1, pt2, (255, 0, 0), 2)
         shape_type = "STRAIGHT (fallback)"
 
-    # Save final result
     img[y_roi:y_roi + h_roi, x_roi:x_roi + w_roi] = roi_color
     cv2.imwrite(output_image_path, img)
     print(f"Detected text shape: {shape_type}")
     print(f"Saved output to: {output_image_path}")
     print(f"Grayscale ROI saved to: {preprocess_debug_name}")
-
-# Example usage
-if __name__ == "__main__":
-    image_file = "curve1.jpg"  # Replace with your actual image file
-    roi_box = (228, 130, 143, 43)  # Replace with your region (x, y, w, h)
-    detect_text_curve_max_coverage(image_file, roi_box, output_image_path="output_detected_curve.png")
