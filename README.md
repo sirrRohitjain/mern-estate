@@ -1,3 +1,51 @@
+'''import cv2
+import numpy as np
+
+def color_reduction_kmeans(image, k=4):
+    Z = image.reshape((-1, 3))
+    Z = np.float32(Z)
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, labels, centers = cv2.kmeans(Z, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+    centers = np.uint8(centers)
+    reduced = centers[labels.flatten()].reshape((image.shape))
+    return reduced
+
+def get_saliency_mask(image, saliency_threshold=128):
+    saliency = cv2.saliency.StaticSaliencyFineGrained_create()
+    (success, saliency_map) = saliency.computeSaliency(image)
+    if not success:
+        raise ValueError("Saliency computation failed.")
+    
+    saliency_map = (saliency_map * 255).astype(np.uint8)
+    _, saliency_mask = cv2.threshold(saliency_map, saliency_threshold, 255, cv2.THRESH_BINARY)
+    return saliency_map, saliency_mask
+
+def extract_text_regions_color_saliency(image_path, debug_prefix="debug"):
+    img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError("Image not found")
+
+    # 1. Color Reduction
+    reduced = color_reduction_kmeans(img, k=4)
+    cv2.imwrite(f"{debug_prefix}_color_reduced.jpg", reduced)
+
+    # 2. Saliency Detection
+    saliency_map, saliency_mask = get_saliency_mask(reduced)
+    cv2.imwrite(f"{debug_prefix}_saliency_map.jpg", saliency_map)
+    cv2.imwrite(f"{debug_prefix}_saliency_mask.jpg", saliency_mask)
+
+    # 3. Apply mask to image to keep only probable text regions
+    result = cv2.bitwise_and(img, img, mask=saliency_mask)
+    cv2.imwrite(f"{debug_prefix}_text_region_candidates.jpg", result)
+
+    return result, saliency_mask
+
+# Example usage
+if __name__ == "__main__":
+    image_file = "./image_testing/image065.jpg"
+    extract_text_regions_color_saliency(image_file, debug_prefix="./image_results/image001")'''
 import cv2
 import numpy as np
 import os
@@ -155,7 +203,7 @@ def fit_and_draw_curve(centroids, roi_image, degree_options=(1, 2, 3), max_dist=
 def process_single_text_roi(image_path, roi, debug_prefix="debug"):
     masked_roi, saliency_mask, original_roi, gray = extract_text_regions_color_saliency(image_path, roi, debug_prefix=debug_prefix)
 
-    # ✅ Save the processed ROI used as input to MSER
+    
     cv2.imwrite(f"{debug_prefix}_processed_roi.jpg", masked_roi)
 
     centroids, roi_with_boxes = get_mser_characters(
@@ -177,33 +225,10 @@ def process_single_text_roi(image_path, roi, debug_prefix="debug"):
 
 # Example usage
 if __name__ == "__main__":
-    image_file = "./image_testing/image079.jpg"
-    roi_box = (930, 857, 347, 124)  # (x, y, w, h)
-    process_single_text_roi(image_file, roi_box, debug_prefix="./image_results/image079")
+    image_file = "./image_testing/image078.jpg"
+    roi_box = (817,464,1639,664)  # (x, y, w, h)
+    process_single_text_roi(image_file, roi_box, debug_prefix="./image_results/image078")
 
 
-✅ Complete code updated to:
-
-Draw MSER boxes and centroids on both original ROI and processed ROI
-
-Save *_processed_roi_with_mser.jpg for visual inspection
-
-
-You’ll now see:
-
-processed_roi.jpg – input to MSER
-
-processed_roi_with_mser.jpg – same, with green boxes and red dots
-
-final_result.jpg – fitted curve overlaid
-
-
-Let me know if you want:
-
-Character boxes as parallelograms
-
-Bounding polygon around all characters
-
-Centroid data exported to a file (JSON/CSV)
 
 
