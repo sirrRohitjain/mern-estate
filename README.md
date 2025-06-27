@@ -12,17 +12,15 @@ def color_reduction_kmeans(image, k=4):
     reduced = centers[labels.flatten()].reshape((image.shape))
     return reduced
 
-def get_saliency_mask(image, saliency_threshold=128):
-    saliency = cv2.saliency.StaticSaliencyFineGrained_create()
-    (success, saliency_map) = saliency.computeSaliency(image)
-    if not success:
-        raise ValueError("Saliency computation failed.")
-    
-    saliency_map = (saliency_map * 255).astype(np.uint8)
-    _, saliency_mask = cv2.threshold(saliency_map, saliency_threshold, 255, cv2.THRESH_BINARY)
-    return saliency_map, saliency_mask
+def compute_gradient_saliency(gray):
+    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(sobelx ** 2 + sobely ** 2)
+    grad_mag = (grad_mag / grad_mag.max() * 255).astype(np.uint8)
+    _, mask = cv2.threshold(grad_mag, 80, 255, cv2.THRESH_BINARY)
+    return grad_mag, mask
 
-def extract_text_regions_color_saliency(image_path, debug_prefix="debug"):
+def extract_text_regions_fallback(image_path, debug_prefix="debug"):
     img = cv2.imread(image_path)
     if img is None:
         raise FileNotFoundError("Image not found")
@@ -31,12 +29,13 @@ def extract_text_regions_color_saliency(image_path, debug_prefix="debug"):
     reduced = color_reduction_kmeans(img, k=4)
     cv2.imwrite(f"{debug_prefix}_color_reduced.jpg", reduced)
 
-    # 2. Saliency Detection
-    saliency_map, saliency_mask = get_saliency_mask(reduced)
-    cv2.imwrite(f"{debug_prefix}_saliency_map.jpg", saliency_map)
+    # 2. Grayscale & gradient-based saliency approximation
+    gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
+    grad_mag, saliency_mask = compute_gradient_saliency(gray)
+    cv2.imwrite(f"{debug_prefix}_gradient_saliency.jpg", grad_mag)
     cv2.imwrite(f"{debug_prefix}_saliency_mask.jpg", saliency_mask)
 
-    # 3. Apply mask to image to keep only probable text regions
+    # 3. Apply mask to keep text-like areas
     result = cv2.bitwise_and(img, img, mask=saliency_mask)
     cv2.imwrite(f"{debug_prefix}_text_region_candidates.jpg", result)
 
@@ -45,4 +44,4 @@ def extract_text_regions_color_saliency(image_path, debug_prefix="debug"):
 # Example usage
 if __name__ == "__main__":
     image_file = "./image_testing/image079.jpg"
-    extract_text_regions_color_saliency(image_file, debug_prefix="./image_results/image079")
+    extract_text_regions_fallback(image_file, debug_prefix="./image_results/image079")
