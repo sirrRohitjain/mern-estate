@@ -1,67 +1,20 @@
-'''import cv2
-import numpy as np
-
-def color_reduction_kmeans(image, k=4):
-    Z = image.reshape((-1, 3))
-    Z = np.float32(Z)
-
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    _, labels, centers = cv2.kmeans(Z, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-
-    centers = np.uint8(centers)
-    reduced = centers[labels.flatten()].reshape((image.shape))
-    return reduced
-
-def get_saliency_mask(image, saliency_threshold=128):
-    saliency = cv2.saliency.StaticSaliencyFineGrained_create()
-    (success, saliency_map) = saliency.computeSaliency(image)
-    if not success:
-        raise ValueError("Saliency computation failed.")
-    
-    saliency_map = (saliency_map * 255).astype(np.uint8)
-    _, saliency_mask = cv2.threshold(saliency_map, saliency_threshold, 255, cv2.THRESH_BINARY)
-    return saliency_map, saliency_mask
-
-def extract_text_regions_color_saliency(image_path, debug_prefix="debug"):
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError("Image not found")
-
-    # 1. Color Reduction
-    reduced = color_reduction_kmeans(img, k=4)
-    cv2.imwrite(f"{debug_prefix}_color_reduced.jpg", reduced)
-
-    # 2. Saliency Detection
-    saliency_map, saliency_mask = get_saliency_mask(reduced)
-    cv2.imwrite(f"{debug_prefix}_saliency_map.jpg", saliency_map)
-    cv2.imwrite(f"{debug_prefix}_saliency_mask.jpg", saliency_mask)
-
-    # 3. Apply mask to image to keep only probable text regions
-    result = cv2.bitwise_and(img, img, mask=saliency_mask)
-    cv2.imwrite(f"{debug_prefix}_text_region_candidates.jpg", result)
-
-    return result, saliency_mask
-
-# Example usage
-if __name__ == "__main__":
-    image_file = "./image_testing/image065.jpg"
-    extract_text_regions_color_saliency(image_file, debug_prefix="./image_results/image001")'''
 import cv2
 import numpy as np
 import os
 
-# Step 1: Color Reduction (K-means)
-def color_reduction_kmeans(image, k=4):
+
+def kmeans(image, k=4):
     Z = image.reshape((-1, 3))
     Z = np.float32(Z)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
     _, labels, centers = cv2.kmeans(Z, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
     centers = np.uint8(centers)
     reduced = centers[labels.flatten()].reshape((image.shape))
+    cv2.imshow("image",reduced)
+    cv2.waitKey(0)
     return reduced
 
-# Step 2: Gradient-Based Saliency Approximation
-def compute_gradient_saliency(gray):
+def saliency(gray):
     sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     grad_mag = np.sqrt(sobelx ** 2 + sobely ** 2)
@@ -69,7 +22,7 @@ def compute_gradient_saliency(gray):
     _, mask = cv2.threshold(grad_mag, 80, 255, cv2.THRESH_BINARY)
     return grad_mag, mask
 
-# Step 3: Preprocessing ROI with color reduction and saliency
+
 def extract_text_regions_color_saliency(image_path, roi, debug_prefix="debug"):
     img = cv2.imread(image_path)
     if img is None:
@@ -78,11 +31,11 @@ def extract_text_regions_color_saliency(image_path, roi, debug_prefix="debug"):
     x, y, w, h = roi
     roi_color = img[y:y+h, x:x+w].copy()
 
-    reduced = color_reduction_kmeans(roi_color, k=4)
+    reduced = kmeans(roi_color, k=4)
     cv2.imwrite(f"{debug_prefix}_color_reduced.jpg", reduced)
 
     gray = cv2.cvtColor(reduced, cv2.COLOR_BGR2GRAY)
-    grad_mag, saliency_mask = compute_gradient_saliency(gray)
+    grad_mag, saliency_mask = saliency(gray)
     cv2.imwrite(f"{debug_prefix}_gradient_saliency.jpg", grad_mag)
     cv2.imwrite(f"{debug_prefix}_saliency_mask.jpg", saliency_mask)
 
@@ -91,8 +44,7 @@ def extract_text_regions_color_saliency(image_path, roi, debug_prefix="debug"):
 
     return text_region, saliency_mask, roi_color, gray
 
-# Step 4: MSER + Filtering
-def get_mser_characters(masked_image, original_roi, processed_roi=None, min_area=30, max_area=10000, delta=5, save_debug=False, debug_prefix="debug"):
+def mser(masked_image, original_roi, processed_roi=None, min_area=30, max_area=10000, delta=5, save_debug=False, debug_prefix="debug"):
     mser = cv2.MSER_create()
     mser.setMinArea(min_area)
     mser.setMaxArea(max_area)
@@ -127,7 +79,6 @@ def get_mser_characters(masked_image, original_roi, processed_roi=None, min_area
 
     return char_centroids, original_roi
 
-# Step 4B: Add contour-based candidates
 def add_contour_boxes(masked_image, centroids, debug_img):
     gray = cv2.cvtColor(masked_image, cv2.COLOR_BGR2GRAY)
     contours, _ = cv2.findContours(gray, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -143,8 +94,7 @@ def add_contour_boxes(masked_image, centroids, debug_img):
             cv2.circle(debug_img, (int(cx), int(cy)), 2, (200, 0, 255), -1)
     return centroids, debug_img
 
-# Step 4C: Fallback if not enough centroids
-def fallback_otsu_contour(gray_roi):
+def otsu_contour(gray_roi):
     _, thresh = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     fallback_centroids = []
@@ -157,7 +107,6 @@ def fallback_otsu_contour(gray_roi):
         fallback_centroids.append((cx, cy))
     return fallback_centroids
 
-# Step 5: Fit and draw curve through centroids
 def fit_and_draw_curve(centroids, roi_image, degree_options=(1, 2, 3), max_dist=10):
     if len(centroids) < 3:
         print("Not enough centroids for curve fitting.")
@@ -199,14 +148,13 @@ def fit_and_draw_curve(centroids, roi_image, degree_options=(1, 2, 3), max_dist=
 
     return roi_image
 
-# Step 6: Full processing pipeline
-def process_single_text_roi(image_path, roi, debug_prefix="debug"):
+def detect(image_path, roi, debug_prefix="debug"):
     masked_roi, saliency_mask, original_roi, gray = extract_text_regions_color_saliency(image_path, roi, debug_prefix=debug_prefix)
 
     
     cv2.imwrite(f"{debug_prefix}_processed_roi.jpg", masked_roi)
 
-    centroids, roi_with_boxes = get_mser_characters(
+    centroids, roi_with_boxes = mser(
         masked_roi,
         original_roi.copy(),
         processed_roi=masked_roi.copy(),
@@ -217,18 +165,138 @@ def process_single_text_roi(image_path, roi, debug_prefix="debug"):
 
     if len(centroids) < 3:
         print("Too few MSER + contour centroids, using fallback.")
-        centroids = fallback_otsu_contour(gray)
+        centroids = otsu_contour(gray)
 
     final_result = fit_and_draw_curve(centroids, roi_with_boxes)
     cv2.imwrite(f"{debug_prefix}_final_result.jpg", final_result)
     print(f"Saved final result to {debug_prefix}_final_result.jpg")
 
-# Example usage
 if __name__ == "__main__":
-    image_file = "./image_testing/image078.jpg"
-    roi_box = (817,464,1639,664)  # (x, y, w, h)
-    process_single_text_roi(image_file, roi_box, debug_prefix="./image_results/image078")
+    image_file = "./image_testing/image053.jpg"
+    roi_box = (440,172,598,265)   # (x, y, w, h)
+    detect(image_file, roi_box, debug_prefix="./image_results/image053")
 
 
 
 
+
+    #this method will work only if we just give curve text as an image i.e image should have only text and for regular characters this code 
+##this code can be improved a bit by just handling the centroids
+import cv2
+import numpy as np
+
+def preprocess_image(image_path):
+    img = cv2.imread(image_path)
+ 
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    return img, binary
+
+def baselinecurve(binary_image, original_image):
+
+    contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    bottom_points = []
+    for contour in contours:
+        if cv2.contourArea(contour) > 50:  
+            
+            bottom = tuple(contour[contour[:, :, 1].argmax()][0])
+            bottom_points.append(bottom)
+    
+    if not bottom_points:
+        return original_image
+    
+
+    bottom_points = np.array(bottom_points)
+    bottom_points = bottom_points[bottom_points[:, 0].argsort()]
+    
+   
+    x = bottom_points[:, 0]
+    y = bottom_points[:, 1]
+    
+   
+    coeffs = np.polyfit(x, y, 2)
+    poly = np.poly1d(coeffs)
+    
+   
+    x_curve = np.linspace(x.min(), x.max(), 100)
+    y_curve = poly(x_curve)
+    curve_points = np.column_stack((x_curve, y_curve)).astype(np.int32)
+    
+    
+    result = original_image.copy()
+    cv2.polylines(result, [curve_points], isClosed=False, color=(0, 0, 255), thickness=2)
+    
+    # Also draw the bottom points for reference
+    for point in bottom_points:
+        cv2.circle(result, tuple(point), 3, (255, 0, 0), -1)
+    
+    return result
+
+def main(image_path):
+       original, binary = preprocess_image(image_path)
+       result_image = baselinecurve(binary, original)
+       cv2.imshow('Original Image', original)
+       cv2.imshow('Detected Baseline Curve', result_image)
+       cv2.waitKey(0)
+       cv2.destroyAllWindows()
+        
+       return result_image
+ 
+
+if __name__ == "__main__":
+    image_path = "curve.png"  
+    result_img = main(image_path)
+    
+    # To save the result
+    # cv2.imwrite('detected_curve.jpg', result_img) 
+
+
+    '''
+
+    def detect_text_topline_curve(binary_image, original_image):
+    """Detect the top-line curve of text using contour tops"""
+    # Find contours of text components
+    contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Collect TOP points of each contour (approximating top-line)
+    top_points = []
+    for contour in contours:
+        if cv2.contourArea(contour) > 50:  # Filter small noise
+            # Get the TOP-most point of the contour (minimum Y value)
+            top = tuple(contour[contour[:, :, 1].argmin()][0])
+            top_points.append(top)
+    
+    if not top_points:
+        return original_image
+    
+    # Convert to numpy array and sort by x-coordinate
+    top_points = np.array(top_points)
+    top_points = top_points[top_points[:, 0].argsort()]
+    
+    # Fit a polynomial curve to the top points
+    x = top_points[:, 0]
+    y = top_points[:, 1]
+    
+    # Fit a 2nd degree polynomial
+    coeffs = np.polyfit(x, y, 2)
+    poly = np.poly1d(coeffs)
+    
+    # Generate points for the fitted curve
+    x_curve = np.linspace(x.min(), x.max(), 100)
+    y_curve = poly(x_curve)
+    curve_points = np.column_stack((x_curve, y_curve)).astype(np.int32)
+    
+    # Draw the curve on the original image
+    result = original_image.copy()
+    cv2.polylines(result, [curve_points], isClosed=False, color=(0, 255, 0), thickness=2)  # Green for top-line
+    
+    # Draw the top points for reference
+    for point in top_points:
+        cv2.circle(result, tuple(point), 3, (255, 0, 0), -1)  # Blue dots
+    
+    return result
+
+    '''
